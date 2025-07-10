@@ -9,6 +9,7 @@ const cors = require('cors');
 
 // Import authentication routes
 const authRoutes = require('./login_signup');
+const userReportMissingRoutes = require('./user_report_missing_back');
 
 const app = express();
 const port = 5000;
@@ -22,6 +23,7 @@ app.use(cors({
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api', userReportMissingRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
