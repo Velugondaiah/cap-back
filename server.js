@@ -50,7 +50,7 @@ app.use('*', (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`🚀 Server running on http://localhost:${port}`);
+    console.log(`🚀 Server running on http://localhost:${port}`);
   console.log(`📝 API Documentation:`);
   console.log(`   POST /api/auth/signup/user - Register general user`);
   console.log(`   POST /api/auth/signup/police - Register police officer`);
@@ -58,4 +58,4 @@ app.listen(port, () => {
   console.log(`   POST /api/auth/login - Login for all user types`);
   console.log(`   GET /api/auth/profile - Get user profile (requires token)`);
   console.log(`   PUT /api/auth/profile - Update user profile (requires token)`);
-});
+  });
