@@ -102,4 +102,25 @@ router.post('/report_missing', upload.single('image'), async (req, res) => {
   }
 });
 
+// GET /api/user_missing_reports?user_id=123
+router.get('/user_missing_reports', async (req, res) => {
+  const { user_id } = req.query;
+  if (!user_id) {
+    return res.status(400).json({ success: false, message: 'user_id is required' });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('missing_reports')
+      .select('*')
+      .eq('user_id', user_id)
+      .order('created_at', { ascending: false });
+    if (error) {
+      return res.status(500).json({ success: false, message: 'Database error', error });
+    }
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Internal server error', error: err.message });
+  }
+});
+
 module.exports = router;
