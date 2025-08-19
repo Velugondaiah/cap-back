@@ -21,6 +21,8 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET || "UJn3iq9LpYAxf_MRLwB1kA0ioTU",
 });
 
+
+
 // Face detection API config
 const FACE_DETECTION_URL = 'http://localhost:8000/detect-from-url/';
 
