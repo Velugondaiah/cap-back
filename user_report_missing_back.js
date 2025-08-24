@@ -3,11 +3,38 @@ const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 const cloudinary = require('cloudinary').v2;
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
 
 // Multer setup for file upload (memory storage)
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
+
+// JWT Secret - In production, use environment variable
+const JWT_SECRET = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5yeHFjZmRieXNjcWdyZHJxZWd1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MjAzNDM1MiwiZXhwIjoyMDY3NjEwMzUyfQ.bEFQLDvIeX0rfM_zfrMM1mTVFMFc8_wuSy28R1g3qBg";
+
+// Verify token middleware
+const verifyToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ 
+      success: false, 
+      message: 'Access token required' 
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ 
+      success: false, 
+      message: 'Invalid or expired token' 
+    });
+  }
+};
 
 
 // Supabase config
@@ -49,7 +76,7 @@ async function performFaceDetection(imageUrl) {
 }
 
 // POST /api/report_missing
-router.post('/report_missing', upload.single('image'), async (req, res) => {
+router.post('/report_missing', verifyToken, upload.single('image'), async (req, res) => {
   try {
     const {
       full_name,
@@ -60,10 +87,13 @@ router.post('/report_missing', upload.single('image'), async (req, res) => {
       guardian_name,
       relationship,
       phone_number,
-      email,
-      user_id
+      email
     } = req.body;
-
+    
+        // Get user_id from authenticated user's JWT token
+    const user_id = req.user.id;
+    console.log('✅ Authenticated user creating missing person report:', { user_id, email: req.user.email, role: req.user.role });
+    
     // Validate required fields
     if (!full_name || !guardian_name) {
       return res.status(400).json({ success: false, message: 'Full name and guardian name are required.' });
@@ -108,7 +138,8 @@ router.post('/report_missing', upload.single('image'), async (req, res) => {
       relationship,
       phone_number,
       email,
-      user_id: user_id || null,
+      user_id: user_id || null, // ID of user who created the report (from users_table)
+      matched_report: null, // Will store user_id from face detection API response when match found
       status: 'active' // <-- Always set status to 'active' on creation
     };
 
@@ -135,39 +166,14 @@ router.post('/report_missing', upload.single('image'), async (req, res) => {
           }
           
           if (matchedUserId) {
-            // Update the report data to mark as found and link to unknown person
-            const userIdToUpdate = parseInt(matchedUserId);
+            // Update matched_report with the user_id from face detection API response
             finalReportData = {
               ...finalReportData,
-              status: 'found',  // Mark as found immediately
-              user_id: userIdToUpdate,  // Link to unknown_persons table
-              matched_with: JSON.stringify(faceDetectionResult.matched_with)  // Store matched_with data
+              matched_report: parseInt(matchedUserId), // Store the user_id from unknown_persons table
+              status: 'found' // Mark as found immediately
             };
-            console.log('Updated report data with user_id:', userIdToUpdate, 'and status: found');
-            
-            // Also update any existing active missing person reports
-            try {
-              const updatePayload = { 
-                status: 'found',
-                user_id: userIdToUpdate,
-                matched_with: JSON.stringify(faceDetectionResult.matched_with),
-                updated_at: new Date().toISOString()
-              };
-              
-              const { data: updateData, error: updateError } = await supabase
-                .from('missing_reports')
-                .update(updatePayload)
-                .eq('status', 'active')
-                .select();
-
-              if (updateError) {
-                console.error('Error updating existing active reports:', updateError);
-              } else {
-                console.log(`Updated ${updateData.length} existing active reports to found with user_id:`, userIdToUpdate);
-              }
-            } catch (updateErr) {
-              console.error('Error updating existing reports:', updateErr);
-            }
+            console.log('Updated report data with matched_report:', matchedUserId, 'and status: found');
+            console.log('Original user_id (reporter) preserved:', finalReportData.user_id);
           }
         }
       }
@@ -199,17 +205,25 @@ router.post('/report_missing', upload.single('image'), async (req, res) => {
 });
 
 // GET /api/user_missing_reports
-router.get('/user_missing_reports', async (req, res) => {
-  const { user_id } = req.query;
-  if (!user_id) {
-    return res.status(400).json({ success: false, message: 'user_id is required' });
-  }
+router.get('/user_missing_reports', verifyToken, async (req, res) => {
+  // Get user_id from authenticated user's JWT token
+  const user_id = req.user.id;
+  console.log('✅ Authenticated user fetching their missing person reports:', { user_id, email: req.user.email, role: req.user.role });
   
   try {
     const { data, error } = await supabase
       .from('missing_reports')
-      .select('*')
-      .eq('user_id', user_id)
+      .select(`
+        *,
+        users_table!missing_reports_user_id_fkey (
+          user_id,
+          name,
+          email,
+          phone,
+          address
+        )
+      `)
+      .eq('user_id', user_id) // Query by reporter's user_id
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -223,11 +237,21 @@ router.get('/user_missing_reports', async (req, res) => {
 });
 
 // Add this endpoint to get all missing reports
-router.get('/missing-reports', async (req, res) => {
+router.get('/missing-reports', verifyToken, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('missing_reports')
-      .select('*')
+      .select(`
+        *,
+        users_table!missing_reports_user_id_fkey (
+          user_id,
+          name,
+          email,
+          phone,
+          address
+        )
+      `)
+      .eq('user_id', req.user.id) // Only show reports created by this user
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -240,12 +264,24 @@ router.get('/missing-reports', async (req, res) => {
 });
 
 // GET endpoint to fetch both missing and unknown person reports
-router.get('/all-reports', async (req, res) => {
+router.get('/all-reports', verifyToken, async (req, res) => {
   try {
-    // Fetch missing reports
+    console.log('✅ Authenticated user fetching all reports:', { user_id: req.user.id, email: req.user.email, role: req.user.role });
+    
+    // Fetch missing reports with user information (ONLY for authenticated user)
     const { data: missingReports, error: missingError } = await supabase
       .from('missing_reports')
-      .select('*')
+      .select(`
+        *,
+        users_table!missing_reports_user_id_fkey (
+          user_id,
+          name,
+          email,
+          phone,
+          address
+        )
+      `)
+      .eq('user_id', req.user.id) // Only show reports created by this user
       .order('created_at', { ascending: false });
 
     if (missingError) throw missingError;
@@ -297,14 +333,17 @@ router.get('/all-reports', async (req, res) => {
 });
 
 // POST endpoint for reporting unknown person
-router.post('/report-unknown', upload.single('image'), async (req, res) => {
+router.post('/report-unknown', verifyToken, upload.single('image'), async (req, res) => {
   try {
     const {
       name,
-      location,
-      user_id
+      location
     } = req.body;
-
+    
+        // Get user_id from authenticated user's JWT token
+    const user_id = req.user.id;
+    console.log('✅ Authenticated user reporting unknown person:', { user_id, email: req.user.email, role: req.user.role });
+    
     // Handle image upload to Cloudinary
     let image_url = null;
     if (req.file) {
@@ -368,38 +407,36 @@ router.post('/report-unknown', upload.single('image'), async (req, res) => {
            console.log('Matched with user_id from unknown_persons:', matchedUserId);
          }
          
-         if (matchedUserId) {
-           try {
-             console.log('Starting update process for user_id:', matchedUserId);
+                   if (matchedUserId) {
+            try {
+              console.log('Starting update process for user_id:', matchedUserId);
+              console.log('Note: This will update matched_report column, preserving the original user_id (reporter)');
              
              // Ensure user_id is an integer
              const userIdToUpdate = parseInt(matchedUserId);
              console.log('Converted user_id to integer:', userIdToUpdate);
              
-             // Simply update all active missing person reports with the user_id from API response
-             const updatePayload = { 
-               status: 'found',
-               user_id: userIdToUpdate,  // Update user_id to link to unknown_persons table
-               matched_with: JSON.stringify(faceDetectionResult.matched_with),   // Store the matched_with data as JSON string
-               updated_at: new Date().toISOString()
-             };
+                           // Update payload to mark missing persons as found and link to this unknown person
+              const updatePayload = { 
+                status: 'found',
+                matched_report: userIdToUpdate, // Update matched_report to link to unknown_persons table
+                updated_at: new Date().toISOString()
+              };
              
              console.log('Update payload:', updatePayload);
 
-             // Update all active missing person reports
+             // Find and update all active missing person reports that might match this unknown person
              const { data: updateData, error: updateError } = await supabase
                .from('missing_reports')
                .update(updatePayload)
-               .eq('status', 'active')
+               .eq('status', 'active')      // only update if still active
                .select();
 
              if (updateError) {
                console.error('Error updating missing reports:', updateError);
-               console.error('Update error details:', updateError);
              } else {
-               console.log(`Successfully updated ${updateData.length} missing person reports to found`);
-               console.log('Updated user_id:', userIdToUpdate);
-               console.log('✅ All active missing person reports updated successfully!');
+               console.log(`✅ Successfully updated ${updateData.length} missing person reports to found`);
+               console.log('Updated matched_report to:', userIdToUpdate);
              }
            } catch (updateErr) {
              console.error('Error updating missing report status:', updateErr);
@@ -433,7 +470,7 @@ router.post('/report-unknown', upload.single('image'), async (req, res) => {
 });
 
 // Update status of missing person report
-router.put('/missing-report/:id/status', async (req, res) => {
+router.put('/missing-report/:id/status', verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
@@ -480,7 +517,7 @@ router.put('/missing-report/:id/status', async (req, res) => {
 });
 
 // New endpoint to mark a missing person as found
-router.post('/mark-person-found/:id', async (req, res) => {
+router.post('/mark-person-found/:id', verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -534,11 +571,21 @@ router.post('/mark-person-found/:id', async (req, res) => {
 });
 
 // Debug endpoint to check missing reports table
-router.get('/debug-missing-reports', async (req, res) => {
+router.get('/debug-missing-reports', verifyToken, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('missing_reports')
-      .select('*');
+      .select(`
+        *,
+        users_table!missing_reports_user_id_fkey (
+          user_id,
+          name,
+          email,
+          phone,
+          address
+        )
+      `)
+      .eq('user_id', req.user.id); // Only show reports created by this user
 
     if (error) throw error;
 
@@ -560,7 +607,7 @@ router.get('/debug-missing-reports', async (req, res) => {
 });
 
 // Debug endpoint to check unknown persons table
-router.get('/debug-unknown-persons', async (req, res) => {
+router.get('/debug-unknown-persons', verifyToken, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('unknown_persons')
@@ -586,11 +633,21 @@ router.get('/debug-unknown-persons', async (req, res) => {
 });
 
 // New endpoint to get found persons with details
-router.get('/found-persons', async (req, res) => {
+router.get('/found-persons', verifyToken, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('missing_reports')
-      .select('*')
+      .select(`
+        *,
+        users_table!missing_reports_user_id_fkey (
+          user_id,
+          name,
+          email,
+          phone,
+          address
+        )
+      `)
+      .eq('user_id', req.user.id) // Only show reports created by this user
       .eq('status', 'found')
       .order('found_date', { ascending: false });
 
@@ -611,7 +668,7 @@ router.get('/found-persons', async (req, res) => {
 });
 
 // New endpoint to manually trigger face detection and update status
-router.post('/trigger-face-detection/:id', async (req, res) => {
+router.post('/trigger-face-detection/:id', verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -669,8 +726,7 @@ router.post('/trigger-face-detection/:id', async (req, res) => {
           
           const updatePayload = { 
             status: 'found',
-            user_id: userIdToUpdate,  // Update user_id to link to unknown_persons table
-            matched_with: JSON.stringify(faceDetectionResult.matched_with),  // Store the matched_with data as JSON string
+            matched_report: userIdToUpdate, // Update matched_report to link to unknown_persons table
             updated_at: new Date().toISOString()
           };
           
@@ -685,9 +741,6 @@ router.post('/trigger-face-detection/:id', async (req, res) => {
 
           if (updateError) {
             console.error('Error updating missing report status:', updateError);
-            console.error('Update error details:', updateError);
-            console.error('Error code:', updateError.code);
-            console.error('Error message:', updateError.message);
             return res.status(500).json({
               success: false,
               message: 'Failed to update report status'
@@ -695,7 +748,7 @@ router.post('/trigger-face-detection/:id', async (req, res) => {
           }
 
           console.log('Successfully updated missing report status to found:', updateData);
-          console.log('Updated user_id:', updateData.user_id);
+          console.log('Updated matched_report:', updateData.matched_report);
           console.log('Updated status:', updateData.status);
 
           res.json({
