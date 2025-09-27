@@ -10,6 +10,7 @@ const cors = require('cors');
 // Import authentication routes
 const authRoutes = require('./login_signup');
 const userReportMissingRoutes = require('./user_report_missing_back');
+const unknownPersonReportRoutes = require('./unknown_person_reporting'); // Add this line
 
 const app = express();
 const port = 5000;
@@ -24,6 +25,7 @@ app.use(cors({
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api', userReportMissingRoutes);
+app.use('/api/report', unknownPersonReportRoutes); // Add this line
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -60,4 +62,6 @@ app.listen(port, () => {
   console.log(`   POST /api/auth/login - Login for all user types`);
   console.log(`   GET /api/auth/profile - Get user profile (requires token)`);
   console.log(`   PUT /api/auth/profile - Update user profile (requires token)`);
+  console.log(`   POST /api/report/unknown-person - Report unknown person sighting`);
+  console.log(`   GET /api/report/unknown-person - Get all user's unknown person reports`);
   });

@@ -1,31 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
+const auth = require('../middleware/auth');
+const UnknownPersonReport = require('../models/UnknownPersonReport');
 
-// Middleware to verify JWT token
-const auth = (req, res, next) => {
-  try {
-    const token = req.header('Authorization')?.replace('Bearer ', '');
-    
-    if (!token) {
-      return res.status(401).json({ message: 'No authentication token, access denied' });
-    }
-    
-    const verified = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = verified;
-    next();
-  } catch (err) {
-    res.status(401).json({ message: 'Token verification failed, authorization denied' });
-  }
-};
-
-// Mock database for unknown person reports (replace with actual database in production)
-let reports = [];
-
-// @route   POST /unknown-person
+// @route   POST api/report/unknown-person
 // @desc    Report an unknown person sighting
 // @access  Private
-router.post('/unknown-person', auth, (req, res) => {
+router.post('/unknown-person', auth, async (req, res) => {
   try {
     const { photoURL, location, dateTime, description } = req.body;
     
@@ -39,26 +20,24 @@ router.post('/unknown-person', auth, (req, res) => {
     }
     
     // Create new report
-    const newReport = {
-      id: Date.now().toString(),
+    const newReport = new UnknownPersonReport({
       user: req.user.id,
       photoURL,
       location,
-      dateTime: dateTime || new Date().toISOString(),
+      dateTime: dateTime || Date.now(),
       description,
-      status: 'pending',
-      createdAt: new Date().toISOString()
-    };
+      status: 'pending'
+    });
     
     // Save report to database
-    reports.push(newReport);
+    const savedReport = await newReport.save();
     
-    // Log the Cloudinary URL for debugging
-    console.log('Received photo URL:', photoURL);
+    // Process image for facial recognition (this would be implemented separately)
+    // This could trigger a background job to compare the image against missing persons database
     
     res.status(201).json({
       success: true,
-      report: newReport,
+      report: savedReport,
       message: 'Sighting reported successfully'
     });
     
@@ -68,36 +47,34 @@ router.post('/unknown-person', auth, (req, res) => {
   }
 });
 
-// @route   GET /unknown-person
+// @route   GET api/report/unknown-person
 // @desc    Get all unknown person reports for a user
 // @access  Private
-router.get('/unknown-person', auth, (req, res) => {
+router.get('/unknown-person', auth, async (req, res) => {
   try {
-    const userReports = reports.filter(report => report.user === req.user.id);
+    const reports = await UnknownPersonReport.find({ user: req.user.id })
+      .sort({ dateTime: -1 });
     
-    // Sort by date (newest first)
-    userReports.sort((a, b) => new Date(b.dateTime) - new Date(a.dateTime));
-    
-    res.json(userReports);
+    res.json(reports);
   } catch (error) {
     console.error('Error fetching reports:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// @route   GET /unknown-person/:id
+// @route   GET api/report/unknown-person/:id
 // @desc    Get a specific unknown person report
 // @access  Private
-router.get('/unknown-person/:id', auth, (req, res) => {
+router.get('/unknown-person/:id', auth, async (req, res) => {
   try {
-    const report = reports.find(r => r.id === req.params.id);
+    const report = await UnknownPersonReport.findById(req.params.id);
     
     if (!report) {
       return res.status(404).json({ message: 'Report not found' });
     }
     
     // Check if user owns the report or is an admin
-    if (report.user !== req.user.id && req.user.role !== 'admin') {
+    if (report.user.toString() !== req.user.id && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Not authorized to access this report' });
     }
     
@@ -108,10 +85,10 @@ router.get('/unknown-person/:id', auth, (req, res) => {
   }
 });
 
-// @route   PUT /unknown-person/:id
+// @route   PUT api/report/unknown-person/:id
 // @desc    Update a report status (for admins/police)
 // @access  Private (Admin/Police)
-router.put('/unknown-person/:id', auth, (req, res) => {
+router.put('/unknown-person/:id', auth, async (req, res) => {
   try {
     // Check if user is admin or police
     if (req.user.role !== 'admin' && req.user.role !== 'police') {
@@ -120,31 +97,29 @@ router.put('/unknown-person/:id', auth, (req, res) => {
     
     const { status, notes } = req.body;
     
-    const reportIndex = reports.findIndex(r => r.id === req.params.id);
+    const report = await UnknownPersonReport.findById(req.params.id);
     
-    if (reportIndex === -1) {
+    if (!report) {
       return res.status(404).json({ message: 'Report not found' });
     }
     
     // Update report
-    if (status) reports[reportIndex].status = status;
-    if (notes) reports[reportIndex].adminNotes = notes;
+    if (status) report.status = status;
+    if (notes) report.adminNotes = notes;
     
     // Add status update history
-    if (!reports[reportIndex].statusHistory) {
-      reports[reportIndex].statusHistory = [];
-    }
-    
-    reports[reportIndex].statusHistory.push({
-      status: status || reports[reportIndex].status,
+    report.statusHistory.push({
+      status: status || report.status,
       updatedBy: req.user.id,
       notes,
-      timestamp: new Date().toISOString()
+      timestamp: Date.now()
     });
+    
+    const updatedReport = await report.save();
     
     res.json({
       success: true,
-      report: reports[reportIndex],
+      report: updatedReport,
       message: 'Report updated successfully'
     });
     
